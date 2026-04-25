@@ -24,6 +24,8 @@ const TEST_LAMPORTS: u64 = 10_000_000_000;
 const PREFIX_LEN: usize = 8;
 const MAX_TEST_OFFSET: usize = 0;
 const MAX_SEARCH_BYTES: usize = 8 * 1024 * 1024;
+const SHA256_BASE_COST: u64 = 85;
+const SHA256_BYTES_PER_COMPUTE_UNIT: usize = 2;
 
 static PROGRAM_SO_PATH: OnceLock<PathBuf> = OnceLock::new();
 
@@ -191,8 +193,18 @@ fn finds_the_largest_hashable_payload_within_max_compute_budget() {
     println!(
         "max verified payload at {MAX_COMPUTE_UNIT_LIMIT} CU: {low} bytes, consumed {compute_units_consumed} CU"
     );
+    let sha256_math_limit = theoretical_sha256_payload_limit();
+    let sha256_overhead_bytes = sha256_math_limit - low;
+    println!(
+        "LiteSVM matches the SHA-256 syscall math: pure hash cost allows about {sha256_math_limit} bytes, and the remaining {sha256_overhead_bytes} bytes are consumed by fixed instruction overhead"
+    );
 
     assert!(compute_units_consumed <= u64::from(MAX_COMPUTE_UNIT_LIMIT));
+    assert!(low <= sha256_math_limit);
+    assert!(
+        sha256_overhead_bytes < 1024,
+        "expected the LiteSVM boundary to stay within 1 KiB of the SHA-256-only limit"
+    );
     let boundary_probe_payer = Keypair::new();
     svm.airdrop(&boundary_probe_payer.pubkey(), TEST_LAMPORTS)
         .unwrap();
@@ -314,13 +326,18 @@ fn program_so_path() -> &'static Path {
 
             assert!(status.success(), "cargo build-sbf failed");
 
-            manifest_dir.join("target/deploy/account_verificator.so")
+            manifest_dir.join("target/deploy/account_data_verificator.so")
         })
         .as_path()
 }
 
 fn sha256(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
+}
+
+fn theoretical_sha256_payload_limit() -> usize {
+    ((u64::from(MAX_COMPUTE_UNIT_LIMIT) - SHA256_BASE_COST) * SHA256_BYTES_PER_COMPUTE_UNIT as u64)
+        as usize
 }
 
 fn is_compute_budget_exceeded(error: &litesvm::types::FailedTransactionMetadata) -> bool {
